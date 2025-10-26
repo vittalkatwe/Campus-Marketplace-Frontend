@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -7,21 +6,25 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
-  Alert,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
+  ActivityIndicator,
+  Alert,
+  Modal,
 } from 'react-native';
-import { useAuth } from '@/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '@/contexts/AuthContext';
 import { webSocketService } from '@/services/WebSocketService';
+
+const BASE_URL = 'http://192.168.1.7:8080';
 
 interface Community {
   id: number;
   name: string;
   description: string;
   createdAt: string;
-  isAnonymous: boolean;
+  isAnonymous?: boolean;
 }
 
 interface CommunityMessage {
@@ -30,313 +33,301 @@ interface CommunityMessage {
   communityId: number;
   content: string;
   timestamp: string;
-  senderName?: string;
-  isOptimistic?: boolean;
+  _type?: 'community';
 }
 
-const BASE_URL = 'http://192.168.1.7:8080';
-
 export default function CommunitiesScreen() {
-  const { token, isAuthenticated, userEmail } = useAuth();
+  const { token, userEmail } = useAuth();
   const [communities, setCommunities] = useState<Community[]>([]);
   const [selectedCommunity, setSelectedCommunity] = useState<Community | null>(null);
-  const [communityMessages, setCommunityMessages] = useState<CommunityMessage[]>([]);
-  const [newMessage, setNewMessage] = useState('');
+  const [messages, setMessages] = useState<CommunityMessage[]>([]);
+  const [messageInput, setMessageInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [showCommunityModal, setShowCommunityModal] = useState(false);
+  
   const flatListRef = useRef<FlatList>(null);
+  const selectedCommunityRef = useRef<Community | null>(null);
 
-  // WebSocket connection
+  // Update ref whenever selectedCommunity changes
   useEffect(() => {
-    if (isAuthenticated && token && userEmail) {
-      console.log('🔄 Initializing WebSocket connection for user:', userEmail);
-      webSocketService.connect(token, userEmail);
-      
-      const unsubscribeConnection = webSocketService.onConnectionChange((connected) => {
-        console.log('🔄 Connection status:', connected);
-        setConnectionStatus(connected);
-      });
+    selectedCommunityRef.current = selectedCommunity;
+    console.log('📝 Selected community updated to:', selectedCommunity?.name);
+  }, [selectedCommunity]);
 
-      const unsubscribeMessages = webSocketService.onMessage((message: CommunityMessage) => {
-        console.log('📨 New community message received:', message);
-        handleIncomingMessage(message);
-      });
-
-      return () => {
-        unsubscribeConnection();
-        unsubscribeMessages();
-      };
+  // Fetch communities on mount
+  useEffect(() => {
+    if (token) {
+      fetchCommunities();
     }
-  }, [isAuthenticated, token, userEmail]);
+  }, [token]);
 
-  // Fetch all communities
+  // Setup WebSocket connection and message handling
+  useEffect(() => {
+    if (!token || !userEmail) {
+      console.log('⚠️ WebSocket: not authenticated, skipping...');
+      return;
+    }
+
+    console.log('🔌 Setting up WebSocket connection for communities...');
+
+    // Connect to WebSocket service
+    webSocketService.connect(token, userEmail);
+
+    // Subscribe to connection changes
+    const unsubscribeConnection = webSocketService.onConnectionChange((isConnected) => {
+      console.log('🔌 WebSocket connection status:', isConnected);
+      setConnected(isConnected);
+    });
+
+    // Subscribe to incoming messages
+    const unsubscribeMessages = webSocketService.onMessage((message: CommunityMessage) => {
+      console.log('📨 Received community message:', message);
+      
+      // Only process community messages
+      if (message._type === 'community') {
+        handleIncomingCommunityMessage(message);
+      }
+    });
+
+    return () => {
+      console.log('🧹 Cleaning up WebSocket subscriptions');
+      unsubscribeConnection();
+      unsubscribeMessages();
+    };
+  }, [token, userEmail]);
+
+  // Fetch messages when community is selected
+  useEffect(() => {
+    if (selectedCommunity && token) {
+      fetchCommunityMessages(selectedCommunity.id);
+    }
+  }, [selectedCommunity, token]);
+
   const fetchCommunities = async () => {
+    if (!token) return;
+
     try {
+      console.log('📋 Fetching communities...');
       const response = await fetch(`${BASE_URL}/api/communities`, {
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
       });
 
       if (response.ok) {
-        const allCommunities: Community[] = await response.json();
-        console.log('Fetched communities:', allCommunities);
-        setCommunities(allCommunities);
+        const communitiesData: Community[] = await response.json();
+        console.log('✅ Fetched communities:', communitiesData);
+        setCommunities(communitiesData);
       } else {
-        console.error('Failed to fetch communities, status:', response.status);
+        console.error('❌ Failed to fetch communities:', response.status);
         Alert.alert('Error', 'Failed to load communities');
       }
     } catch (error) {
-      console.error('Error fetching communities:', error);
+      console.error('❌ Error fetching communities:', error);
       Alert.alert('Error', 'Failed to load communities');
     } finally {
       setLoading(false);
     }
   };
 
-  // Fetch community messages
   const fetchCommunityMessages = async (communityId: number) => {
+    if (!token) return;
+
     try {
-      const response = await fetch(`${BASE_URL}/api/messages/community/${communityId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      console.log('💬 Fetching community messages for:', communityId);
+      const response = await fetch(
+        `${BASE_URL}/api/messages/community/${communityId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
       if (response.ok) {
-        const messages: CommunityMessage[] = await response.json();
-        console.log('Fetched community messages:', messages);
-        setCommunityMessages(messages);
+        const msgs: CommunityMessage[] = await response.json();
+        console.log(`✅ Fetched ${msgs.length} community messages`);
+        setMessages(msgs);
+
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
       } else {
-        console.error('Failed to fetch messages, status:', response.status);
-        Alert.alert('Error', 'Failed to load community messages');
+        console.error('❌ Failed to fetch community messages:', response.status);
       }
     } catch (error) {
-      console.error('Error fetching community messages:', error);
-      Alert.alert('Error', 'Failed to load community messages');
+      console.error('❌ Error fetching community messages:', error);
     }
   };
 
-  const handleIncomingMessage = (message: CommunityMessage) => {
-    console.log('🔄 Processing incoming community message:', message);
+  const handleIncomingCommunityMessage = (message: CommunityMessage) => {
+    const currentCommunity = selectedCommunityRef.current;
     
-    // If this message is for the currently selected community
-    if (selectedCommunity && message.communityId === selectedCommunity.id) {
-      console.log('✅ Adding message to current community chat');
-      
-      // Check if message already exists to prevent duplicates
-      setCommunityMessages(prev => {
-        const messageExists = prev.some(msg => 
-          !msg.isOptimistic && // Don't count optimistic messages as duplicates
-          msg.content === message.content && 
-          msg.senderEmail === message.senderEmail &&
-          Math.abs(new Date(msg.timestamp).getTime() - new Date(message.timestamp).getTime()) < 5000
+    if (currentCommunity && message.communityId === currentCommunity.id) {
+      console.log('✅ Message is for current community, adding to UI');
+      setMessages((prevMessages) => {
+        // Prevent duplicates
+        const exists = prevMessages.some(
+          (m) =>
+            m.content === message.content &&
+            m.timestamp === message.timestamp &&
+            m.senderEmail === message.senderEmail
         );
         
-        if (!messageExists) {
-          // Remove any optimistic messages with the same content and add the real message
-          const filtered = prev.filter(msg => 
-            !msg.isOptimistic || msg.content !== message.content
-          );
-          return [...filtered, message];
+        if (exists) {
+          console.log('⚠️ Duplicate message, skipping');
+          return prevMessages;
         }
-        console.log('⚠️ Duplicate message detected, skipping');
-        return prev;
+        
+        console.log('✅ Adding new community message to UI');
+        return [...prevMessages, message];
       });
-      
-      scrollToBottom();
+
+      // Scroll to bottom after adding message
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    } else {
+      console.log('ℹ️ Message is for different community or no community selected');
     }
   };
-  
 
-  // Send message to community via WebSocket
-  // Add this function to communities.tsx as a fallback
-const sendCommunityMessageViaRest = async () => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/messages/community/${selectedCommunity?.id}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content: newMessage.trim(),
-      }),
+  const sendMessage = () => {
+    if (!messageInput.trim()) {
+      Alert.alert('Error', 'Please enter a message');
+      return;
+    }
+
+    if (!selectedCommunity) {
+      Alert.alert('Error', 'No community selected');
+      return;
+    }
+
+    if (!connected) {
+      Alert.alert('Error', 'Not connected to chat server. Please wait...');
+      return;
+    }
+
+    if (!userEmail) {
+      Alert.alert('Error', 'User not authenticated');
+      return;
+    }
+
+    console.log('📤 Sending community message:', {
+      communityId: selectedCommunity.id,
+      content: messageInput.trim()
     });
 
-    if (response.ok) {
-      console.log('✅ Message sent via REST API');
-      // Refresh messages after a short delay
-      setTimeout(() => {
-        if (selectedCommunity) {
-          fetchCommunityMessages(selectedCommunity.id);
-        }
-      }, 500);
-      return true;
-    } else {
-      throw new Error(`HTTP ${response.status}`);
-    }
-  } catch (error) {
-    console.error('❌ REST API failed:', error);
-    return false;
-  }
-};
+    try {
+      setSending(true);
 
-// Then modify your sendCommunityMessage function:
-const sendCommunityMessage = async () => {
-  if (!newMessage.trim() || !selectedCommunity) return;
-
-  setSending(true);
-  
-  // Create optimistic message
-  const optimisticMessage: CommunityMessage = {
-    senderEmail: userEmail || 'current-user',
-    communityId: selectedCommunity.id,
-    content: newMessage.trim(),
-    timestamp: new Date().toISOString(),
-    isOptimistic: true,
-  };
-  
-  try {
-    console.log('🔄 Sending message to community:', selectedCommunity.name);
-    
-    // Add optimistic message immediately
-    setCommunityMessages(prev => [...prev, optimisticMessage]);
-    setNewMessage('');
-    scrollToBottom();
-    
-    // Try WebSocket first
-    webSocketService.sendDirectMessage('', newMessage.trim(), selectedCommunity.id);
-    
-    // If WebSocket fails, try REST after 2 seconds
-    setTimeout(async () => {
-      const messagesAfterSend = communityMessages;
-      const messageStillOptimistic = messagesAfterSend.some(msg => 
-        msg.isOptimistic && msg.content === optimisticMessage.content
+      const success = webSocketService.sendCommunityMessage(
+        selectedCommunity.id,
+        messageInput.trim()
       );
-      
-      if (messageStillOptimistic) {
-        console.log('🔄 WebSocket might have failed, trying REST API');
-        await sendCommunityMessageViaRest();
+
+      if (success) {
+        console.log('✅ Community message sent successfully');
+        setMessageInput('');
+      } else {
+        Alert.alert('Error', 'Failed to send message. Please try again.');
       }
-    }, 2000);
-    
-  } catch (error) {
-    console.error('❌ Error sending community message:', error);
-    // Try REST API as fallback
-    const restSuccess = await sendCommunityMessageViaRest();
-    if (!restSuccess) {
-      Alert.alert('Error', 'Failed to send message');
-      // Remove optimistic message
-      setCommunityMessages(prev => prev.filter(msg => 
-        !msg.isOptimistic || msg.content !== optimisticMessage.content
-      ));
+    } catch (error) {
+      console.error('❌ Error sending community message:', error);
+      Alert.alert('Error', 'Failed to send message. Please try again.');
+    } finally {
+      setSending(false);
     }
-  } finally {
-    setSending(false);
-  }
-};
-
-  const scrollToBottom = () => {
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
   };
 
-  // Select community and load its messages
-  const selectCommunity = (community: Community) => {
-    setSelectedCommunity(community);
-    fetchCommunityMessages(community.id);
-  };
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchCommunities();
+  const formatTime = (timestamp: string) => {
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (error) {
+      return '';
     }
-  }, [isAuthenticated]);
-
-  // Safe key extractor for communities
-  const communityKeyExtractor = (item: Community, index: number) => {
-    return item.id ? item.id.toString() : `community-${index}`;
   };
 
-  // Safe key extractor for messages
-  const messageKeyExtractor = (item: CommunityMessage, index: number) => {
-    return item.id ? item.id.toString() : `message-${index}-${item.timestamp}`;
+  const formatDate = (timestamp: string) => {
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleDateString();
+    } catch (error) {
+      return '';
+    }
   };
 
-  const renderCommunityItem = ({ item, index }: { item: Community; index: number }) => (
+  const renderCommunityItem = ({ item }: { item: Community }) => (
     <TouchableOpacity
-      style={styles.communityItem}
-      onPress={() => selectCommunity(item)}
+      style={[
+        styles.communityItem,
+        selectedCommunity?.id === item.id && styles.communityItemSelected,
+      ]}
+      onPress={() => {
+        console.log('🏠 Selected community:', item.name);
+        setSelectedCommunity(item);
+        setShowCommunityModal(true);
+      }}
     >
       <View style={styles.communityAvatar}>
         <Text style={styles.communityAvatarText}>
-          {item.name?.charAt(0).toUpperCase() || 'C'}
+          {item.name[0].toUpperCase()}
         </Text>
       </View>
       <View style={styles.communityInfo}>
-        <Text style={styles.communityName}>{item.name || 'Unnamed Community'}</Text>
-        <Text style={styles.communityDescription} numberOfLines={2}>
-          {item.description || 'No description available'}
+        <Text style={styles.communityName} numberOfLines={1}>
+          {item.name}
         </Text>
-        <View style={styles.communityMeta}>
-          <View style={styles.communityType}>
-            <Ionicons 
-              name={item.isAnonymous ? "eye-off-outline" : "eye-outline"} 
-              size={14} 
-              color="#666" 
-            />
-            <Text style={styles.communityTypeText}>
-              {item.isAnonymous ? 'Anonymous' : 'Public'}
-            </Text>
-          </View>
-          <Text style={styles.createdDate}>
-            {item.createdAt ? `Created ${new Date(item.createdAt).toLocaleDateString()}` : ''}
-          </Text>
-        </View>
+        <Text style={styles.communityDescription} numberOfLines={2}>
+          {item.description}
+        </Text>
+        <Text style={styles.communityMeta}>
+          Created {formatDate(item.createdAt)}
+          {item.isAnonymous && ' • Anonymous'}
+        </Text>
       </View>
-      <Ionicons name="chevron-forward" size={20} color="#CCCCCC" />
+      <Ionicons name="chevron-forward" size={20} color="#999" />
     </TouchableOpacity>
   );
 
-  const renderMessageItem = ({ item, index }: { item: CommunityMessage; index: number }) => {
-    const isCurrentUser = item.senderEmail === userEmail;
-    const isOptimistic = item.isOptimistic;
-    
+  const renderMessageItem = ({ item }: { item: CommunityMessage }) => {
+    const isOwn = item.senderEmail === userEmail;
+    const displayName = selectedCommunity?.isAnonymous && !isOwn ? 'Anonymous' : item.senderEmail;
+
     return (
-      <View style={[
-        styles.messageContainer,
-        isCurrentUser ? styles.currentUserMessage : styles.otherUserMessage,
-      ]}>
-        <View style={styles.messageHeader}>
-          <Text style={styles.senderName}>
-            {selectedCommunity?.isAnonymous && !isCurrentUser 
-              ? 'Anonymous' 
-              : (item.senderName || item.senderEmail || 'Unknown User')
-            }
+      <View
+        style={[
+          styles.messageContainer,
+          isOwn ? styles.myMessage : styles.theirMessage,
+        ]}
+      >
+        {!isOwn && (
+          <Text style={styles.senderName}>{displayName}</Text>
+        )}
+        <View
+          style={[
+            styles.messageBubble,
+            isOwn ? styles.myMessageBubble : styles.theirMessageBubble,
+          ]}
+        >
+          <Text
+            style={[
+              styles.messageText,
+              isOwn ? styles.myMessageText : styles.theirMessageText,
+            ]}
+          >
+            {item.content}
           </Text>
-          <Text style={styles.messageTime}>
-            {item.timestamp ? new Date(item.timestamp).toLocaleTimeString([], { 
-              hour: '2-digit', minute: '2-digit' 
-            }) : 'Unknown time'}
-          </Text>
-        </View>
-        <View style={[
-          styles.messageBubble,
-          isCurrentUser ? styles.currentUserBubble : styles.otherUserBubble,
-          isOptimistic && styles.optimisticMessage,
-        ]}>
-          <Text style={[
-            styles.messageText,
-            isCurrentUser ? styles.currentUserText : styles.otherUserText,
-            isOptimistic && styles.optimisticText,
-          ]}>
-            {item.content || ''}
-            {isOptimistic && ' ⏳'}
+          <Text
+            style={[
+              styles.messageTime,
+              isOwn ? styles.myMessageTime : styles.theirMessageTime,
+            ]}
+          >
+            {formatTime(item.timestamp)}
           </Text>
         </View>
       </View>
@@ -345,255 +336,229 @@ const sendCommunityMessage = async () => {
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#EF4444" />
-        <Text style={styles.loadingText}>Loading communities...</Text>
-      </View>
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Communities</Text>
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#EF4444" />
+          <Text style={styles.loadingText}>Loading communities...</Text>
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.container}>
-      {!selectedCommunity ? (
-        // Communities List View
-        <View style={styles.communitiesContainer}>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Communities</Text>
-            <View style={styles.connectionStatus}>
-              <View style={[
-                styles.statusDot,
-                connectionStatus ? styles.connected : styles.disconnected,
-              ]} />
-              <Text style={styles.statusText}>
-                {connectionStatus ? 'Connected' : 'Disconnected'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Communities List */}
-          {communities.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Ionicons name="people-outline" size={64} color="#CCCCCC" />
-              <Text style={styles.emptyText}>No communities available</Text>
-              <Text style={styles.emptySubtext}>
-                Check back later for new communities
-              </Text>
-            </View>
-          ) : (
-            <FlatList
-              data={communities}
-              renderItem={renderCommunityItem}
-              keyExtractor={communityKeyExtractor}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.listContent}
-            />
-          )}
+    <SafeAreaView style={styles.container}>
+      {!connected && (
+        <View style={styles.connectionBanner}>
+          <ActivityIndicator size="small" color="#fff" />
+          <Text style={styles.connectionText}>Connecting...</Text>
         </View>
-      ) : (
-        // Community Chat View
-        <KeyboardAvoidingView 
-          style={styles.chatContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
-          {/* Chat Header */}
-          <View style={styles.chatHeader}>
-            <TouchableOpacity 
-              style={styles.backButton}
-              onPress={() => setSelectedCommunity(null)}
-            >
-              <Ionicons name="arrow-back" size={24} color="#000" />
-            </TouchableOpacity>
-            <View style={styles.chatCommunityInfo}>
-              <View style={styles.chatCommunityAvatar}>
-                <Text style={styles.chatCommunityAvatarText}>
-                  {selectedCommunity.name?.charAt(0).toUpperCase() || 'C'}
-                </Text>
-              </View>
-              <View>
-                <Text style={styles.chatCommunityName}>{selectedCommunity.name || 'Community'}</Text>
-                <Text style={styles.chatCommunityType}>
-                  {selectedCommunity.isAnonymous ? 'Anonymous Community' : 'Public Community'}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.connectionStatus}>
-              <View style={[
-                styles.statusDot,
-                connectionStatus ? styles.connected : styles.disconnected,
-              ]} />
-              <Text style={styles.statusText}>
-                {connectionStatus ? 'Online' : 'Offline'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Anonymous Notice */}
-          {selectedCommunity.isAnonymous && (
-            <View style={styles.anonymousNotice}>
-              <Ionicons name="eye-off-outline" size={16} color="#666" />
-              <Text style={styles.anonymousNoticeText}>
-                This is an anonymous community. Other users' identities are hidden.
-              </Text>
-            </View>
-          )}
-
-          {/* Messages List */}
-          <FlatList
-            ref={flatListRef}
-            data={communityMessages}
-            renderItem={renderMessageItem}
-            keyExtractor={messageKeyExtractor}
-            style={styles.messagesList}
-            contentContainerStyle={styles.messagesContent}
-            onContentSizeChange={scrollToBottom}
-            showsVerticalScrollIndicator={false}
-          />
-
-          {/* Message Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              style={styles.textInput}
-              value={newMessage}
-              onChangeText={setNewMessage}
-              placeholder={`Message ${selectedCommunity.name || 'community'}...`}
-              placeholderTextColor="#999"
-              multiline
-              maxLength={500}
-            />
-            <TouchableOpacity
-              style={[
-                styles.sendButton,
-                (!newMessage.trim() || sending) && styles.sendButtonDisabled,
-              ]}
-              onPress={sendCommunityMessage}
-              disabled={!newMessage.trim() || sending}
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Ionicons name="send" size={20} color="#FFFFFF" />
-              )}
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
       )}
-    </View>
+
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Communities</Text>
+        {connected && (
+          <View style={styles.connectedIndicator}>
+            <View style={styles.connectedDot} />
+            <Text style={styles.connectedText}>Connected</Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.content}>
+        {communities.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Ionicons name="people-outline" size={64} color="#ccc" />
+            <Text style={styles.emptyText}>No communities available</Text>
+            <Text style={styles.emptySubtext}>
+              Communities will appear here when created
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={communities}
+            renderItem={renderCommunityItem}
+            keyExtractor={(item) => item.id.toString()}
+            contentContainerStyle={styles.communitiesList}
+          />
+        )}
+      </View>
+
+      {/* Community Chat Modal */}
+      <Modal
+        visible={showCommunityModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowCommunityModal(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          {selectedCommunity && (
+            <KeyboardAvoidingView
+              style={styles.chatContainer}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+            >
+              <View style={styles.chatHeader}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowCommunityModal(false);
+                    setSelectedCommunity(null);
+                    setMessages([]);
+                  }}
+                  style={styles.backButton}
+                >
+                  <Ionicons name="arrow-back" size={24} color="#000" />
+                </TouchableOpacity>
+                <View style={styles.chatHeaderAvatar}>
+                  <Text style={styles.chatHeaderAvatarText}>
+                    {selectedCommunity.name[0].toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.chatHeaderInfo}>
+                  <Text style={styles.chatHeaderTitle} numberOfLines={1}>
+                    {selectedCommunity.name}
+                  </Text>
+                  <Text style={styles.chatHeaderStatus}>
+                    {selectedCommunity.isAnonymous ? 'Anonymous Community' : 'Community Chat'}
+                  </Text>
+                </View>
+              </View>
+
+              <FlatList
+                ref={flatListRef}
+                data={messages}
+                renderItem={renderMessageItem}
+                keyExtractor={(item, index) => `${item.timestamp}-${index}`}
+                contentContainerStyle={styles.messagesList}
+                onContentSizeChange={() => {
+                  flatListRef.current?.scrollToEnd({ animated: true });
+                }}
+                onLayout={() => {
+                  flatListRef.current?.scrollToEnd({ animated: false });
+                }}
+                ListEmptyComponent={
+                  <View style={styles.emptyMessages}>
+                    <Ionicons name="chatbubbles-outline" size={48} color="#ccc" />
+                    <Text style={styles.emptyMessagesText}>No messages yet</Text>
+                    <Text style={styles.emptyMessagesSubtext}>
+                      Start the conversation!
+                    </Text>
+                  </View>
+                }
+              />
+
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.messageInput}
+                  placeholder={
+                    selectedCommunity.isAnonymous 
+                      ? "Send an anonymous message..." 
+                      : "Type a message..."
+                  }
+                  placeholderTextColor="#999"
+                  value={messageInput}
+                  onChangeText={setMessageInput}
+                  multiline
+                  maxLength={500}
+                  editable={connected}
+                  onSubmitEditing={sendMessage}
+                  blurOnSubmit={false}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.sendButton,
+                    (!messageInput.trim() || !connected) && styles.sendButtonDisabled,
+                  ]}
+                  onPress={sendMessage}
+                  disabled={!messageInput.trim() || sending || !connected}
+                >
+                  {sending ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons
+                      name="send"
+                      size={20}
+                      color={messageInput.trim() && connected ? '#fff' : '#ccc'}
+                    />
+                  )}
+                </TouchableOpacity>
+              </View>
+            </KeyboardAvoidingView>
+          )}
+        </SafeAreaView>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#fff',
   },
-  centerContainer: {
+  modalContainer: {
     flex: 1,
-    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  connectionBanner: {
+    backgroundColor: '#F59E0B',
+    flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    gap: 8,
   },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-  },
-  communitiesContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
+  connectionText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: '#E5E5E5',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 24,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: '#000',
   },
-  connectionStatus: {
+  connectedIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  statusDot: {
+  connectedDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-  },
-  connected: {
     backgroundColor: '#10B981',
   },
-  disconnected: {
-    backgroundColor: '#EF4444',
-  },
-  statusText: {
+  connectedText: {
     fontSize: 12,
-    color: '#666',
+    color: '#10B981',
+    fontWeight: '500',
   },
-  listContent: {
-    paddingVertical: 8,
-  },
-  communityItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
-  },
-  communityAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#EF4444',
+  loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    gap: 16,
   },
-  communityAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: 'bold',
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
   },
-  communityInfo: {
+  content: {
     flex: 1,
   },
-  communityName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#000',
-    marginBottom: 4,
-  },
-  communityDescription: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-    lineHeight: 18,
-  },
-  communityMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  communityType: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  communityTypeText: {
-    fontSize: 12,
-    color: '#666',
-  },
-  createdDate: {
-    fontSize: 12,
-    color: '#999',
-  },
-  emptyContainer: {
+  emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
@@ -604,19 +569,62 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#666',
     marginTop: 16,
-    marginBottom: 8,
-    textAlign: 'center',
   },
   emptySubtext: {
     fontSize: 14,
     color: '#999',
+    marginTop: 8,
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 24,
+  },
+  communitiesList: {
+    paddingVertical: 8,
+  },
+  communityItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  communityItemSelected: {
+    backgroundColor: '#F0F9FF',
+  },
+  communityAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#8B5CF6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  communityAvatarText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  communityInfo: {
+    flex: 1,
+  },
+  communityName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#000',
+    marginBottom: 4,
+  },
+  communityDescription: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4,
+    lineHeight: 18,
+  },
+  communityMeta: {
+    fontSize: 12,
+    color: '#999',
   },
   chatContainer: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
   },
   chatHeader: {
     flexDirection: 'row',
@@ -624,151 +632,144 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-    backgroundColor: '#FFFFFF',
+    borderBottomColor: '#E5E5E5',
+    backgroundColor: '#fff',
   },
   backButton: {
-    padding: 8,
-    marginRight: 8,
+    marginRight: 12,
+    padding: 4,
   },
-  chatCommunityInfo: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  chatCommunityAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#EF4444',
+  chatHeaderAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#8B5CF6',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
-  chatCommunityAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  chatCommunityName: {
+  chatHeaderAvatarText: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: '#fff',
+  },
+  chatHeaderInfo: {
+    flex: 1,
+  },
+  chatHeaderTitle: {
+    fontSize: 18,
+    fontWeight: '700',
     color: '#000',
   },
-  chatCommunityType: {
+  chatHeaderStatus: {
     fontSize: 12,
-    color: '#666',
+    color: '#64748B',
     marginTop: 2,
   },
-  anonymousNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEF3C7',
+  messagesList: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    gap: 8,
+    paddingVertical: 12,
+    flexGrow: 1,
   },
-  anonymousNoticeText: {
+  emptyMessages: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptyMessagesText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#999',
+    marginTop: 12,
+  },
+  emptyMessagesSubtext: {
     fontSize: 14,
-    color: '#92400E',
+    color: '#ccc',
+    marginTop: 4,
     textAlign: 'center',
   },
-  messagesList: {
-    flex: 1,
-    backgroundColor: '#F8F8F8',
-  },
-  messagesContent: {
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-  },
   messageContainer: {
-    marginVertical: 4,
-    paddingHorizontal: 12,
+    marginBottom: 16,
+    maxWidth: '85%',
   },
-  currentUserMessage: {
-    alignItems: 'flex-end',
+  myMessage: {
+    alignSelf: 'flex-end',
   },
-  otherUserMessage: {
-    alignItems: 'flex-start',
-  },
-  messageHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-    paddingHorizontal: 8,
+  theirMessage: {
+    alignSelf: 'flex-start',
   },
   senderName: {
     fontSize: 12,
-    fontWeight: '600',
     color: '#666',
-    marginRight: 8,
-  },
-  messageTime: {
-    fontSize: 11,
-    color: '#999',
+    marginBottom: 4,
+    marginLeft: 8,
   },
   messageBubble: {
-    maxWidth: '80%',
+    borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 20,
   },
-  currentUserBubble: {
-    backgroundColor: '#EF4444',
-    borderBottomRightRadius: 4,
+  myMessageBubble: {
+    backgroundColor: '#8B5CF6',
+    borderBottomRightRadius: 6,
   },
-  otherUserBubble: {
-    backgroundColor: '#FFFFFF',
-    borderBottomLeftRadius: 4,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-  },
-  optimisticMessage: {
-    opacity: 0.7,
-    backgroundColor: '#F59E0B',
+  theirMessageBubble: {
+    backgroundColor: '#F1F5F9',
+    borderBottomLeftRadius: 6,
   },
   messageText: {
     fontSize: 16,
     lineHeight: 20,
   },
-  currentUserText: {
-    color: '#FFFFFF',
+  myMessageText: {
+    color: '#fff',
   },
-  otherUserText: {
-    color: '#000000',
+  theirMessageText: {
+    color: '#000',
   },
-  optimisticText: {
-    color: '#FFFFFF',
+  messageTime: {
+    fontSize: 11,
+    marginTop: 4,
+  },
+  myMessageTime: {
+    color: '#E9D5FF',
+    textAlign: 'right',
+  },
+  theirMessageTime: {
+    color: '#64748B',
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: '#F0F0F0',
+    borderTopColor: '#E5E5E5',
+    backgroundColor: '#fff',
   },
-  textInput: {
+  messageInput: {
     flex: 1,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 20,
+    backgroundColor: '#F9F9F9',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    marginRight: 12,
-    fontSize: 16,
+    marginRight: 8,
     maxHeight: 100,
+    fontSize: 16,
+    color: '#000',
   },
   sendButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#EF4444',
+    backgroundColor: '#8B5CF6',
     justifyContent: 'center',
     alignItems: 'center',
   },
   sendButtonDisabled: {
-    backgroundColor: '#CCCCCC',
+    backgroundColor: '#F1F5F9',
   },
 });
