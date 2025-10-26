@@ -4,21 +4,48 @@ import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { LoadingScreen } from '@/components/LoadingScreen';
 
 export const unstable_settings = {
-  anchor: '(tabs)',
+  initialRouteName: 'login',
 };
 
-export default function RootLayout() {
+function AppContent() {
   const colorScheme = useColorScheme();
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+        {isAuthenticated ? (
+          // Authenticated routes
+          <>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+          </>
+        ) : (
+          // Unauthenticated routes
+          <>
+            <Stack.Screen name="login" options={{ title: 'Login', headerShown: false }} />
+            <Stack.Screen name="register" options={{ title: 'Register', headerShown: false }} />
+            <Stack.Screen name="verify" options={{ title: 'Verify', headerShown: false }} />
+          </>
+        )}
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }

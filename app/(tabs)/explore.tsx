@@ -1,5 +1,8 @@
 import { Image } from 'expo-image';
 import { Platform, StyleSheet } from 'react-native';
+import { useAuth } from '@/contexts/AuthContext';
+import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
 
 import { Collapsible } from '@/components/ui/collapsible';
 import { ExternalLink } from '@/components/external-link';
@@ -10,6 +13,19 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Fonts } from '@/constants/theme';
 
 export default function TabTwoScreen() {
+  const { isAuthenticated, loading } = useAuth();
+  const router = useRouter();
+  
+  useEffect(() => {
+    if (!loading && !isAuthenticated) {
+      router.replace('/login');
+    }
+  }, [isAuthenticated, loading, router]);
+
+  if (loading || !isAuthenticated) {
+    return null;
+  }
+
   return (
     <ParallaxScrollView
       headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
